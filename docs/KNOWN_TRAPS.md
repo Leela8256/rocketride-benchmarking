@@ -20,9 +20,12 @@ any launch longer than ten minutes.
    The video runners also fall back to `~/.local/bin/aws` explicitly.
 4. **The box auto-stops after about an hour below 20 % CPU**, with no
    warning. Disk survives. Long low-CPU phases (corpus extraction, hashing,
-   image builds, report writing) can trip it. Campaign runners carry a
-   keepalive loop that is paused during measured spans. Never run a
-   keepalive inside a measured span: it is charged as CPU.
+   image builds, report writing) can trip it. Some runners carry a
+   keepalive loop: the video matched runner pauses it during measured
+   spans, the PDF campaign runners pin it to the last core (inside the
+   client's set), and the films, sweep and staging scripts leave it
+   running. It is never charged to an arm's cgroup, but it does take a core
+   away. Never add a keepalive of your own inside a measured span.
 5. **The SSO token expires within hours.** Monitoring from the laptop goes
    blind; the run on the box does not care (instance role). Re-login and
    carry on. The 60 s S3 sync in the video runners means a blind period
@@ -67,7 +70,7 @@ any launch longer than ten minutes.
 18. **3.3.0 and 3.3.1 do not boot on Linux** without the onnxruntime pin fix
     (`aws_pdf/findings/rr_linux_boot.md`). The Dockerfile applies it. All
     five requirement files must move together or the failure gets worse.
-19. **3.3.1 double-emits embedding batches of 64 or more chunks.** The
+19. **3.3.1 double-emits some embedding batches.** The
     duplication correction is a build argument; `self_duplication` is a
     permanent gate. The defect was fixed upstream from 3.4.0, so the official
     3.5.0.584 build runs unpatched (`RR_DUP_PATCH=0`) and the gate watches it.
@@ -122,8 +125,11 @@ any launch longer than ten minutes.
     stream-copy mux of `Closeup1.avi` and `Mix-Headset.wav`. Delete the raw
     downloads after muxing; keeping them caused the ENOSPC failure.
 34. **About 10 % of AMI meetings have video and audio streams of different
-    length.** The manifest carries ffprobe video durations for `frame_law`
-    and audio durations for the footage denominator. Do not mix them.
+    length.** The manifest carries both the audio duration and the ffprobe
+    video-stream duration; the drivers use the probed video duration as the
+    footage denominator and for `frame_law` when it is present (Run C
+    predates the field and used audio durations, 98.19 h versus 96.06 h
+    probed). Say which one a number uses.
 35. **The films pin's second column is the upstream filename**, which differs
     from the staged filename for 213 of 500 films. Use column 1 (the archive
     id) plus `.mp4`.
@@ -156,5 +162,35 @@ any launch longer than ten minutes.
     run** because the absent arm has no records. Read the per-arm lines.
 45. **`aws_pdf/bench/test_langgraph_profile.py` runs inside the profiler
     image** (it loads `/app/bench_profile_app.py`). On a laptop its
-    `setUpClass` errors by design; the other five tests in `bench/` pass
-    with `cd aws_pdf/bench && python3 -m unittest test_profile_capture`.
+    `setUpClass` errors by design; the six tests in `test_profile_capture.py`
+    pass with `cd aws_pdf/bench && python3 -m unittest test_profile_capture`.
+46. **`REPS=1` ends in `RUN FAIL` by design** on the PDF track: determinism
+    is unproven with one rep unless `bench/cross_mode_determinism.py`
+    evidence exists. Use `REPS=2` or more for anything that must say PASS.
+    The video report marks a single rep `SKIP` and `evidence_grade: SIZING`
+    instead of failing.
+47. **Compose project names come from the folder.** This repository's
+    projects are `aws_pdf` and `aws_video`; the older clone on the box used
+    `aws_bench` and `aws_videobench`. Container names are fixed in the
+    compose files, so stopped containers from the old projects block
+    `compose up` with a name conflict until removed; the model-cache volume
+    is per project (`aws_video_rr-model-cache`); `:latest` image tags are
+    shared between clones.
+48. **Any compose command in `aws_pdf/` needs `CORPUS` set** (the client
+    mounts `${CORPUS}:/corpus:ro`; an empty value is an invalid mount spec).
+    The runner exports it; by hand use `CORPUS=$HOME`.
+49. **The official engine env forces the patch knobs.**
+    `aws_pdf/run/official-engine-20261021.env` exports `RR_DUP_PATCH=0`,
+    `RR_LENSORT_PATCH=0` and `PARSE_STOCK_URL=` unconditionally, and
+    `matched_run.sh` sources it whenever no engine is selected. The older
+    campaign scripts (batch10k, nodeprofile, parse_pathology, pr2197) were
+    written for 3.3.1 and silently run on the official build unpatched
+    unless you source `aws_pdf/run/historical-engine-3.3.1.env` first.
+    `environment.txt` always records what actually ran.
+50. **`aws_pdf/run/parse_ab_aws.sh` names its bulk cell `rr-traced`**, but
+    `nodeprofile.sh` only turns tracing on for a cell named exactly
+    `traced`, so that cell runs untraced. Fix the name before reusing it.
+51. **The SSM session shell is not bash.** `box.sh run` executes in the
+    session's shell; `box.sh launch` runs `nohup bash -c`. Keep commands on
+    one line, keep `run` commands POSIX, and source bash-only env files
+    (`aws_video/run/official-engine-20261021.env`) only through `launch`.

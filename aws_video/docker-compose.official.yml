@@ -1,6 +1,12 @@
 # Use with the base compose file. Selects the verified AWS image without
 # rebuilding the historical 3.3.1 Dockerfile or overwriting its image tag.
+# Both the default-posture service and the matched-posture service (which
+# `extends` it in the base file) are retargeted. Verify with
+# `docker compose config --images` before a run.
 services:
   rocketride:
+    image: bench-rocketride:official-87f530f
+    build: !reset null
+  rocketride-matched:
     image: bench-rocketride:official-87f530f
     build: !reset null

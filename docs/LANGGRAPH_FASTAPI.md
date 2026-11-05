@@ -110,7 +110,8 @@ Design decisions, each with its reason:
   loads can never land inside a measured request.
 - **Identity in headers.** Every response carries `X-Request-ID`,
   `X-Pipeline`, `X-Output-SHA256` (sha256 of the body bytes) and
-  `Server-Timing` with per-node nanoseconds. The driver verifies the request
+  `Server-Timing` with per-node durations in milliseconds (measured with a
+  nanosecond counter). The driver verifies the request
   id echo and the body hash; the correctness gate requires both. Timings are
   diagnostic only, because RocketRide exposes no equivalent.
 - **One uvicorn worker** is the deployment shape. Parallelism comes from the
@@ -123,7 +124,7 @@ Design decisions, each with its reason:
 Run it locally for a correctness check (emulated on a Mac, never for timing):
 
 ```bash
-cd aws_pdf && docker compose up -d --build tika langgraph
+cd aws_pdf && CORPUS=$HOME docker compose up -d --build tika langgraph   # CORPUS must be set for any compose command here
 curl -s localhost:8100/health/ready
 curl -s localhost:8100/meta | python3 -m json.tool
 curl -s -i -F "file=@arms/rocketride/data/probe/sample.pdf;type=application/pdf" localhost:8100/v1/process/document-pdf-v1 | head -20
@@ -133,9 +134,11 @@ curl -s -i -F "file=@arms/rocketride/data/probe/sample.pdf;type=application/pdf"
 
 ```
 service.py   FastAPI shell: POST /process (multipart video -> documents JSON),
-             GET /health/ready (models loaded AND one synthetic frame through the
-             whole graph), GET /meta (pid, port, torch threads, env, checkpoint hashes)
-graph.py     the five-node StateGraph over VideoState; each node records its wall time
+             GET /health/ready (models loaded AND one synthetic frame through
+             detect, chunk and embed), GET /meta (pid, port, torch threads, env,
+             checkpoint hashes)
+graph.py     the five-node StateGraph over VideoState; the four compute nodes
+             record their wall time (assemble does not)
 serve8.py    matched posture: N independent single-worker uvicorn processes, one port each
 workload/    frames.py detect.py chunk.py embed.py
 smoke_lg.py  local one-video smoke
@@ -195,5 +198,5 @@ and `aws_video/MATCHED_POSTURE.md`.
   `apaevt_flow` traces (`RR_TRACE`), which perturb the run and need a control
   cell.
 - The engine keeps uploads in scratch; the LangGraph service deletes them.
-  That is a reported metric (storage amplification), not something the
-  harness works around.
+  The video metrics spec defines this as storage amplification; it has been
+  measured by hand (disk before and after), not computed by `report.py`.

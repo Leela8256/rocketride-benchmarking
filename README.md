@@ -8,10 +8,12 @@ FastAPI service we wrote), on one shared AWS box, on two workloads:
 | PDF ingestion | [`aws_pdf/`](aws_pdf/README.md) | parse (Tika) -> chunk -> embed (MiniLM, 384-d) -> return documents |
 | Video analysis | [`aws_video/`](aws_video/README.md) | 1 frame / 15 s -> RF-DETR detect -> chunk -> embed (MiniLM, 384-d) -> return documents |
 
-Both arms run the same corpus, in the same order, under the same CPU envelope,
-driven by the same client, one arm at a time. **Only the framework varies.**
-Every knob lands in a provenance file, and a run with incomplete provenance is
-not a result.
+Both arms run the same corpus, in the same order, driven by the same client,
+one arm at a time. The PDF track pins each arm and the client to disjoint CPU
+sets; the video track runs unpinned on the whole host and samples the client
+container separately. **Only the framework varies.**
+The knobs that shape a measurement land in the run's environment and
+provenance files, and a run with incomplete provenance is not a result.
 
 This repository is self-contained. Clone it, read the files below in order,
 and you can reproduce every run we have made without any other context.
@@ -36,7 +38,7 @@ rocketride-benchmarking/
   README.md                 this file
   docs/                     the guides listed above
   local/
-    box.sh                  the ONLY command you run on the laptop: login, start, stop, run, launch, tail
+    box.sh                  the only laptop command that touches the box: login, start, stop, run, launch, tail
     local.env.example       copy to local.env, fill in your SSO profile (git-ignored)
   aws_pdf/                  PDF track (was aws_bench in the original repo)
     README.md               start here for PDF
@@ -53,7 +55,7 @@ rocketride-benchmarking/
     README.md               start here for video
     docker-compose.yml      both arms + client, default and matched postures
     arms/langgraph/         the FastAPI + LangGraph service for video
-    arms/rocketride/        the engine image for video (same engine, same patches)
+    arms/rocketride/        the 3.3.1 engine image for video (same two patches as the PDF 3.3.1 build)
     pipe/                   benchmark_video_detect.pipe (the contract) and the dual-lane variant
     bench/                  drivers (default and matched postures), gates, metrics, report
     corpus/                 AMI fetcher, corpus pins, film corpus tooling
@@ -67,14 +69,16 @@ These are not style. Each one exists because breaking it produced a number
 that had to be thrown away.
 
 1. **Only the framework may vary between arms.** Same corpus, same N, same
-   order, same CPU set, same deadline, same warm-up policy, same client,
-   same number of repetitions. `aws_pdf/run/matched_run.sh` enforces this
+   order, same envelope (PDF: one CPU set per arm; video: the whole host,
+   with equal memory limits in the matched postures), same deadline, same
+   warm-up policy, same client, same number of repetitions. `aws_pdf/run/matched_run.sh` enforces this
    for PDF; the video runners do the same for video.
 2. **One arm at a time.** Never run both arms, or two engine instances, in a
    measured span. Stop the Tika sidecar before the RocketRide arm starts.
-3. **The client is a third container on its own cores.** Client CPU must
-   never land in an arm's cgroup, and both arms must receive their bytes over
-   a network hop.
+3. **The client is a third container.** In the PDF track it is pinned to its
+   own cores (`CLIENT_CPUSET`); in the video track it is unpinned but sampled
+   separately. Client CPU must never land in an arm's cgroup, and both arms
+   must receive their bytes over a network hop.
 4. **Gates first, numbers second.** A run that fails a correctness gate keeps
    its data and quotes nothing. `INSUFFICIENT_REPS` or `UNSTABLE` means no
    point value.
@@ -87,39 +91,53 @@ that had to be thrown away.
    batch modes give batch-position latency, which includes queue wait. The
    two are never compared.
 8. **Provenance or it did not happen.** Image digests, engine binary hash,
-   corpus manifest hash, pipe hash, every knob. `provenance.json` is written
-   by the run, not by hand.
+   corpus manifest hash, pipe hash, the knobs that shape the measurement.
+   `provenance.json` and `environment.txt` are written by the run, not by
+   hand.
 9. **Describe the engine honestly.** The historical 3.3.1 image carries two
    documented patches and is "RocketRide 3.3.1 with the documented
    embedding-transformer duplication correction", never "stock 3.3.1". The
-   current default is the unmodified official 3.5.0.584 prerelease build.
+   PDF track defaults to the unmodified official 3.5.0.584 prerelease build;
+   the video track still builds the patched 3.3.1 by default (see
+   `aws_video/README.md` section 5.6 for running video on 3.5.0.584).
 10. **Always stop the box when you are done.** It costs about $1.43 per hour
     while running. The idle auto-stop exists but is not prompt.
 
 ## Quick path: laptop to first result
+
+Prerequisites: the AWS CLI, the Session Manager plugin and an SSO profile
+on the laptop (docs/AWS_BOX_ACCESS.md section 3), and the box check in
+section 5 of that document (stopped containers left by an older clone block
+the first `compose up`).
 
 ```bash
 # laptop, once
 cp local/local.env.example local/local.env       # fill in BOX_PROFILE
 bash local/box.sh login                           # browser SSO, you approve
 bash local/box.sh start                           # boots the box, waits for SSM
-bash local/box.sh run 'git clone https://github.com/Leela8256/rocketride-benchmarking.git'
-bash local/box.sh run 'cd rocketride-benchmarking/aws_pdf && bash run/preflight.sh && bash run/install_awscli.sh'
-bash local/box.sh run 'sudo ln -sf /home/ssm-user/.local/bin/aws /usr/local/bin/aws'
+bash local/box.sh run 'test -d ~/rocketride-benchmarking || git clone https://github.com/Leela8256/rocketride-benchmarking.git ~/rocketride-benchmarking'
+bash local/box.sh run 'cd ~/rocketride-benchmarking/aws_pdf && bash run/install_awscli.sh && sudo ln -sf /home/ssm-user/.local/bin/aws /usr/local/bin/aws'
+bash local/box.sh run 'cd ~/rocketride-benchmarking/aws_pdf && bash run/preflight.sh'
 
-# PDF smoke: 10 documents, both arms, one repetition, closed loop of 4 (about 20 minutes incl. image builds)
-bash local/box.sh launch pdfsmoke 'cd ~/rocketride-benchmarking/aws_pdf && N=10 REPS=1 WARM=2 MODE=c4 bash run/matched_run.sh'
+# PDF smoke: 10 documents, both arms, two repetitions (so determinism can pass), closed loop of 4; about 25 minutes incl. image builds
+bash local/box.sh launch pdfsmoke 'cd ~/rocketride-benchmarking/aws_pdf && N=10 REPS=2 WARM=2 MODE=c4 CENSUS_EMPTY_POLICY=report bash run/matched_run.sh'
 bash local/box.sh tail pdfsmoke 80
+# expected: "RUN PASS"; every gate PASS for both arms (comparison_eligible may be false: a 10-document closed-loop run is not a comparison)
 
-# video smoke: 4 AMI meetings from the staged S3 corpus, both arms (about 25 minutes, 24 GB corpus pull the first time)
-bash local/box.sh launch vidsmoke 'cd ~/rocketride-benchmarking/aws_video && N=4 WARM=2 LG_MODE=c4 bash run/native170.sh'
+# video smoke: 4 AMI meetings from the staged S3 corpus, both arms; about 25 minutes plus the 24 GB corpus pull the first time
+bash local/box.sh launch vidsmoke 'cd ~/rocketride-benchmarking/aws_video && RUN_NAME=smoke-n4-$(date -u +%Y%m%dT%H%M%SZ) N=4 WARM=2 LG_MODE=c4 bash run/native170.sh'
 bash local/box.sh tail vidsmoke 80
+# expected: "FINAL STATUS ... rc_rr=0 rc_lg=0 rc_report=0"; determinism SKIP (single rep, evidence_grade SIZING), every other gate PASS
 
 bash local/box.sh stop                            # ALWAYS
 ```
 
-Results stream to S3 while the run is in progress. From any machine with
-the SSO profile:
+Keep every `box.sh run` and `box.sh launch` command on one line; the
+details are in docs/AWS_BOX_ACCESS.md section 4.
+
+Video runs sync their results directory to S3 every 60 s while running;
+PDF runs upload once, after the report. From any machine with the SSO
+profile:
 
 ```bash
 aws s3 ls s3://rocketride-benchmark-data/leela/bench/ --profile <your-profile>
@@ -141,6 +159,6 @@ python3 aws_pdf/bench/report.py ./run             # the same numbers, on your la
 Follow the documents in the order above. Do not invent commands, flags or
 file names: every runner is self-documenting in its header comment, and
 every knob is listed in the README of its track. Before launching a run
-longer than ten minutes, read `docs/KNOWN_TRAPS.md`. Never run a keep-busy
-loop during a measured span, never run two arms at once, and stop the box
-when the work is done.
+longer than ten minutes, read `docs/KNOWN_TRAPS.md`. Keep every command you
+send to the box on one line. Never run a keep-busy loop during a measured
+span, never run two arms at once, and stop the box when the work is done.

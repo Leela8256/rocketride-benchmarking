@@ -53,7 +53,7 @@ if command -v aws >/dev/null 2>&1; then
   aws s3 cp --recursive "$OUT" "$S3_DEST" && echo "uploaded: $S3_DEST" \
     || echo "WARN: s3 upload failed (results remain in $OUT)"
 else
-  echo "WARN: no aws cli on PATH (see aws-benchmark-box notes); results in $OUT"
+  echo "WARN: no aws cli on PATH (see docs/AWS_BOX_ACCESS.md section 5); results in $OUT"
 fi
 
 echo "smoke done, exit=$rc, results: $OUT"

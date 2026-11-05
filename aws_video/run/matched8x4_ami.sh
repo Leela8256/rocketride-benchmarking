@@ -194,8 +194,8 @@ docker compose run --rm --no-deps --entrypoint pip smoke show rocketride 2>/dev/
 sha256sum arms/rocketride/Dockerfile > "$PROV/rr_dockerfile.sha256" || true
 cp "$PIN" "$M8/measured/measured_order.txt" "$PROV/" || true
 { echo "POSTURE=matched${RR_TASKS}x${RR_BLAS_THREADS}_native ARM_ORDER=$ARM_ORDER REP=$REP N=$N WARM=$NWARM RR_TASKS=$RR_TASKS RR_THREADS_PER_CONN=${RR_THREADS_PER_CONN:-OMITTED} RR_INFLIGHT_PER_TASK=$RR_INFLIGHT_PER_TASK";
-  echo "RR: tasks=8 threads_arg=OMITTED(engine default item threads 64) ttl=0 BLAS/OMP=4 mem=58g sharded_blast";
-  echo "LG: workers=8 ports=8201-8208 torch=4/1 detect_concurrency=1 c32=8x4 mem=58g";
+  echo "RR: tasks=$RR_TASKS threads_arg=${RR_THREADS_PER_CONN:-OMITTED(engine default item threads 64)} ttl=0 BLAS/OMP=$RR_BLAS_THREADS mem=58g sharded_blast inflight_per_task=$RR_INFLIGHT_PER_TASK";
+  echo "LG: workers=$LG_WORKERS port_base=$LG_PORT_BASE torch=$LG_TORCH_THREADS/1 detect_concurrency=$LG_EXPECT_DETECT_CONC per_endpoint=$LG_PER_ENDPOINT_CONCURRENCY mem=58g";
   echo "BENCH_TIMEOUT_S=$BENCH_TIMEOUT_S"; } > "$PROV/run_config.txt"
 
 ( while true; do "$AWS_BIN" s3 sync "$OUT" "$S3_DEST" --quiet 2>/dev/null || true; sleep 60; done ) &

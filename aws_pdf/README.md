@@ -64,20 +64,25 @@ On the box, from a clone of this repository:
 
 ```bash
 cd ~/rocketride-benchmarking/aws_pdf
-bash run/preflight.sh                      # x86_64, 32 cores, docker, disk, network (read-only)
-bash run/install_awscli.sh                 # once; then symlink aws into /usr/local/bin (docs/AWS_BOX_ACCESS.md)
+bash run/install_awscli.sh                 # once; then: sudo ln -sf /home/ssm-user/.local/bin/aws /usr/local/bin/aws
+bash run/preflight.sh                      # x86_64, 32 cores, docker, disk, network, instance role (read-only)
 ```
 
-First run, a smoke of both arms (about 20 minutes, most of it image builds):
+First run, a smoke of both arms (about 25 minutes, most of it image builds).
+Two repetitions, because with one the determinism gate is unproven and the
+verdict is `RUN FAIL` by design:
 
 ```bash
-N=10 REPS=1 WARM=2 MODE=c4 bash run/matched_run.sh
+N=10 REPS=2 WARM=2 MODE=c4 CENSUS_EMPTY_POLICY=report bash run/matched_run.sh
+# expected: RUN PASS, every per-arm gate PASS; comparison_eligible may be false on a 10-document run
 ```
 
-The real thing, launched detached from the laptop:
+The real thing, launched detached from the laptop. `CENSUS_EMPTY_POLICY=report`
+is needed on govdocs from offset 0: `000357.pdf` is text-free on both arms
+and is not allowlisted, so the default `fail` policy would fail the census:
 
 ```bash
-bash local/box.sh launch pdf200 'cd ~/rocketride-benchmarking/aws_pdf && N=200 REPS=3 MODE=c8 bash run/matched_run.sh'
+bash local/box.sh launch pdf200 'cd ~/rocketride-benchmarking/aws_pdf && N=200 REPS=3 MODE=c8 CENSUS_EMPTY_POLICY=report bash run/matched_run.sh'
 bash local/box.sh tail pdf200
 ```
 
@@ -86,7 +91,12 @@ runs the LangGraph arm (with Tika) for `REPS` repetitions, stops it, runs the
 RocketRide arm for `REPS` repetitions, writes provenance, derives the report,
 and uploads the run directory to S3. Its exit status is the gate verdict.
 
-### Knobs (all recorded in provenance)
+### Knobs
+
+Most of these are written to `environment.txt` and `provenance.json` by the
+run. Not recorded: `RR_LENSORT_PATCH` (image label only), `SAMPLE_MAX_S`,
+`MAX_ARCHIVES`, `BENCH_S3`, `SKIP_*`; `RR_TRACE` lands in the driver's
+`shot_meta`.
 
 | variable | default | meaning |
 |---|---|---|
@@ -104,14 +114,14 @@ and uploads the run directory to S3. Its exit status is the gate verdict.
 | `SAMPLE_MAX_S` | 86400 | sampler lifetime; the report discloses coverage |
 | `LG_EXTRACTOR` | `tika` | `tika` matches RocketRide's parser; `pypdf` is the offline-reference path |
 | `RR_THREADS` | unset | `use(threads=N)`; unset = engine default; recorded as requested, never as activated |
-| `ENGINE_VERSION`, `ENGINE_URL`, `ENGINE_SHA256`, `ENGINE_ARCHIVE_SHA256` | official 3.5.0.584 (sourced from `run/official-engine-20261021.env` when both URL and VERSION are unset) | which engine tarball to build |
-| `RR_DUP_PATCH` | 1 (Dockerfile); 0 in the official env | the 3.3.1 duplication correction |
-| `RR_LENSORT_PATCH` | 0 | PR #2197 A/B |
-| `PARSE_STOCK_URL` | empty | parse-node overlay for the PR #2746 A/B |
+| `ENGINE_VERSION`, `ENGINE_URL`, `ENGINE_SHA256`, `ENGINE_ARCHIVE_SHA256` | official 3.5.0.584 (sourced from `run/official-engine-20261021.env` when both URL and VERSION are unset; `. run/historical-engine-3.3.1.env` selects 3.3.1) | which engine tarball to build |
+| `RR_DUP_PATCH` | 1 (Dockerfile); forced to 0 by the official env | the 3.3.1 duplication correction. Honoured only when an engine is selected explicitly (`ENGINE_VERSION` or `ENGINE_URL` set, or the historical env sourced); otherwise the official env overrides it |
+| `RR_LENSORT_PATCH` | 0 | PR #2197 A/B; same override rule as `RR_DUP_PATCH` |
+| `PARSE_STOCK_URL` | empty | parse-node overlay for the PR #2746 A/B; same override rule |
 | `SKIP_LG`, `SKIP_RR` | 0 | run one arm only (a probe, not a comparison; the report says so) |
 | `CENSUS_EMPTY_POLICY` | `fail` | `report` names text-free documents without failing |
 | `RR_TRACE` | empty | `metadata`, `summary` or `full`: per-node timing from the engine's flow traces (needs a control cell) |
-| `RR_PROFILE_SECONDS`, `LG_PROFILE_SECONDS` | 0 | profiler capture windows; nonzero makes the run diagnostic |
+| `RR_PROFILE_SECONDS` | 0 | RocketRide profiler capture window; nonzero makes the run diagnostic (`LG_PROFILE_SECONDS` is a knob of `run/pdf1k_profile_campaign.py` only) |
 | `RUN_TAG` | stamp | names the results directory and the S3 prefix |
 | `BENCH_S3` | `s3://rocketride-benchmark-data/leela/bench` | upload root |
 
@@ -147,9 +157,13 @@ results/<RUN_TAG or STAMP_MODE>/
   lg/rep<r>/per_doc.jsonl   one record per document (+ shot_meta line)
   lg/rep<r>/sampler.jsonl   0.5 s cgroup samples of the langgraph container
   lg/rep<r>/sampler_tika.jsonl   same for the Tika sidecar (charged to LangGraph)
-  rr/rep<r>/per_doc.jsonl, sampler.jsonl, pipeline.pipe
+  lg/rep<r>/manifest.json   the documents offered, in order
+  rr/rep<r>/per_doc.jsonl, sampler.jsonl, manifest.json, pipeline.pipe
   provenance.json           written and checked by run/write_provenance.py
   report.txt                gates, per-rep metrics, stability, cross-arm
+  RUN_REPORT.json           the same report as data (the campaign summaries read it)
+  CROSS_MODE_DETERMINISM.json   when bench/cross_mode_determinism.py was run against another cell
+  (traced or profiled runs add flow_events.jsonl, node_timings.json, profiler/)
 ```
 
 The whole directory is copied to `BENCH_S3/<RUN_TAG or STAMP>/`. From any
@@ -168,6 +182,7 @@ Per arm, fail-closed (a missing field or unproven state is a violation):
 |---|---|
 | `census` | loss: offered == records, no duplicates, no unexpected failures, missing documents named against the manifest |
 | `structure` | corruption: identity proven (RR filepath echo; LG request id + `X-Output-SHA256`), at least one chunk, 384 dims, finite, L2 norm within 1e-3 of 1, hash count == chunk count |
+| `input_integrity` | the bytes the driver sent match the corpus (`input_sha256` against the manifest) |
 | `determinism` | instability: ordered chunk hashes identical across reps; an outcome that flips also fails. Single-rep runs need `bench/cross_mode_determinism.py` evidence (two modes or two cells on the same documents) |
 | `self_duplication` | the 3.3.1 double-emit defect class; needs no other arm |
 
@@ -200,6 +215,12 @@ arms. The full reasoning is in `../docs/DOCKER_AND_ENVELOPE.md`.
 
 ## 9. Campaigns that exist (each runner is self-documenting)
 
+The batch10k, nodeprofile, parse_pathology and pr2197 runners were written
+for the 3.3.1 engine. Since the official env became the default they run on
+3.5.0.584 unpatched unless you source `run/historical-engine-3.3.1.env`
+first; `environment.txt` records what actually ran. `parse_ab_aws.sh` has a
+known cell-name mismatch (`docs/KNOWN_TRAPS.md`).
+
 | runner | what it does |
 |---|---|
 | `run/batch10k_campaign.sh` | RocketRide only, 10k documents, `b16`, `b32`, `b64`, cross-cell determinism, regenerated reports, S3 |
@@ -209,13 +230,27 @@ arms. The full reasoning is in `../docs/DOCKER_AND_ENVELOPE.md`.
 | `run/parse_pathology.sh`, `run/parse_ab_aws.sh` | which node the catastrophic documents belong to; stock vs patched parse node |
 | `run/pdf1k_profile_campaign.py` | one profiled run per arm on frozen images, SMT-isolated cpusets, cgroup sampling from the host |
 | `run/pr2197_pdf_ab.sh` | stock vs length-sorted embedding batching |
-| `run/fault_run.sh` | corrupt, encrypted and zero-byte documents at known positions for M4 and M5 |
+| `run/fault_run.sh` | corrupt, zero-byte, truncated and oversized-garbage documents at positions 2, 67, 134 and 199 for M4 and M5; builds the 3.3.1 engine with the duplication patch |
 
 ## 10. Profiler diagnostics (2026-10-21 campaign)
 
-`run/pdf1k_profile_campaign.py --reps 0` runs one profiled run per
-framework, LangGraph then RocketRide, on the 1,000-document manifest at
-offset 200 with 24 disjoint warm-up documents and 32-document waves. Each
+`run/pdf1k_profile_campaign.py` runs one profiled run per framework,
+LangGraph then RocketRide, on the 1,000-document manifest at offset 200
+with 24 disjoint warm-up documents and 32-document waves:
+
+```bash
+python3 run/pdf1k_profile_campaign.py --output <run dir> --corpus ~/bench_corpus_n1000_off200 \
+  --hf-cache <dir containing hub/models--sentence-transformers--multi-qa-MiniLM-L6-cos-v1> --reps 0 [--s3 <prefix>]
+```
+
+It expects the frozen images `bench-rocketride:official-87f530f` and
+`bench-langgraph:profile-20261021` to exist. The RocketRide one is the PDF
+arm built with the official env and tagged (`../docs/DOCKER_AND_ENVELOPE.md`
+section 3). The LangGraph one is built from `arms/langgraph/Dockerfile.profile`,
+whose base defaults to a box-only tag; from a fresh box build it as
+`docker build -f arms/langgraph/Dockerfile.profile --build-arg BENCH_LG_BASE=bench-langgraph:latest -t bench-langgraph:profile-<date> arms/langgraph`
+and adjust the image name in the campaign script. The 2026-10-21 images
+cannot be rebuilt byte for byte. Each
 cell starts a fresh service; only one arm runs at a time; image IDs, the
 pipe and the Tika configuration are frozen before launch; the host samples
 cgroup counters outside the measured services; both arms mount the same
@@ -226,8 +261,8 @@ image and adds pinned yappi 1.7.6 plus an optional control entry point. With
 `BENCH_PROFILE_CONTROL` disabled, yappi is not imported and the control
 routes do not exist. For RocketRide, `RR_PROFILE_SECONDS=60` starts a
 capture after warm-up through the SDK's `call()` method and exports it
-before the task is terminated; `bench/profile_task.py --token TOKEN` can
-attach to any running task from a client environment. Each profiled rep
+before the task is terminated; `bench/profile_task.py --token TOKEN --seconds 60 --output <dir>`
+can attach to any running task from a client environment. Each profiled rep
 writes `profiler/session.json`, `threads.json`, `report.txt`, `tree.json`
 and per-thread JSON.
 
@@ -237,7 +272,15 @@ engine loops, FFmpeg or GPU work; captures are diagnostic and their speed is
 never quoted as unprofiled performance; a capture cut short by its safety
 limit is reported as partial.
 
-## 11. Known, and deliberate
+## 11. Reference documents
+
+`metrics/README.md` and `RESULTS_PDF.md` were written inside the original
+working repository and mention artefacts that are not in this one
+(`gate50/`, `pdf200/`, `pdf500/`, `selfcheck.py`, the specification `.docx`,
+and local `results/` directories). The S3 paths in `../docs/RESULTS_SO_FAR.md`
+are the record for every cited run.
+
+## 12. Known, and deliberate
 
 - An arm is the service plus whatever it offloads to; Tika's CPU is charged
   to LangGraph as `m7_arm_total`, which feeds `cpu_s_per_chunk`.

@@ -16,7 +16,7 @@ case "${1:-serve}" in
       --host="${RR_HOST:-0.0.0.0}" --port="${RR_PORT:-5565}"
     ;;
   probe)
-    echo "[entrypoint] probe mode is not part of aws_pdf" >&2; exit 1
+    echo "[entrypoint] probe mode is not part of this harness" >&2; exit 1
     ;;
   *)
     exec "$@"

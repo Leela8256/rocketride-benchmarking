@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Corpus: the first N govdocs PDFs, fetched ON THE BOX (there is no scp path).
 #
-# The corpus directory is NAMED FOR N -- ~/bench_corpus_<N>. N therefore cannot
+# The corpus directory is NAMED FOR N and OFFSET -- ~/bench_corpus_n<N>_off<OFFSET>. N therefore cannot
 # drift between fetch and run: a different N is a different directory, so a
 # stale 50-doc corpus can never be silently reused for a 200-doc run, and
 # re-fetching the same N is a no-op instead of a clobber.

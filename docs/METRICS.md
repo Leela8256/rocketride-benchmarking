@@ -23,17 +23,20 @@ line carries the run's mode, span, warm-up stats, pipe hash and provenance
 fields.
 
 Alongside, a **sampler** records the arm's CPU and memory from the
-container's own cgroup (`cpu.stat usage_usec`, `memory.current`,
-`memory.stat anon`, `pids.current`): every 0.5 s inside the container for
-PDF (`aws_pdf/bench/cgroup_sampler.py`), every 15 s from the host for video.
-Never `/proc/stat`: it is not namespaced in Docker and counts idle time, which
-made an earlier sampler report 17.8 cores for a container capped at 12.
+container's own cgroup. PDF: `aws_pdf/bench/cgroup_sampler.py` runs inside
+the container every 0.5 s and reads `cpu.stat usage_usec`, `memory.stat anon`
+and thread counts from `/proc`. Video: the runner reads `cpu.stat usage_usec`,
+`memory.current`, `pids.current` and `memory.stat anon` every 15 s through
+`docker exec` (the matched runner adds `memory.peak` and file cache). Never
+`/proc/stat`: it is not namespaced in Docker and counts idle time, which made
+an earlier sampler report 17.8 cores for a container capped at 12.
 
 Everything is derived afterwards from those files. Nothing is accumulated
 in flight, so any number can be recomputed on any machine, forever:
 
 ```bash
-aws s3 cp --recursive s3://rocketride-benchmark-data/leela/bench/<run>/ ./run --profile <p>
+aws s3 cp --recursive s3://rocketride-benchmark-data/leela/bench/<run>/ ./run --profile <p>        # PDF runs
+aws s3 cp --recursive s3://rocketride-benchmark-data/leela/videobench/<run>/ ./run --profile <p>   # video runs
 python3 aws_pdf/bench/report.py ./run                       # PDF, one run (all reps, both arms)
 python3 aws_video/bench/report.py ./run/rr                  # video, one arm
 python3 aws_video/bench/report.py ./rep1 ./rep2 ./rep3      # video, reps of one arm (adds determinism)
@@ -72,12 +75,12 @@ The verdicts in `report.txt`:
 
 | id | metric | rule or formula |
 |---|---|---|
-| V0 | gates, per arm | census, structure (as PDF, plus chunk length), frame_law (frames == floor(duration / 15) + 1, tolerance 1), self_duplication, corpus_pin (input sha256 == manifest), determinism (single rep = fail by design), metric_coverage (a null metric must be a named exemption), task_census / worker_census in matched postures |
-| V0 | gates, cross-arm | input_identity, frame_parity (exact), detection_ratio (warn outside 0.90 to 1.10), chunk_ratio (hard 0.4 to 2.5, warn 0.8 to 1.25), chunk_parity_tight (warn), workload_ratio (informational) |
+| V0 | gates, per arm | census, structure (as PDF, plus chunk length), frame_law (frames == floor(duration / 15) + 1, tolerance 1), self_duplication, corpus_pin (input sha256 == manifest), determinism (single rep = NOT_RUN, reported as SKIP, and the run is graded SIZING), metric_coverage (a null metric must be a named exemption), task_census / worker_census in matched postures |
+| V0 | gates, cross-arm | input_identity, frame_parity (PASS when identical, WARN within 10 %, FAIL beyond), detection_ratio (warn outside 0.90 to 1.10), chunk_ratio (hard 0.4 to 2.5, warn 0.8 to 1.25), chunk_parity_tight (warn), workload_ratio (informational) |
 | V1 | throughput | **x_realtime** = footage seconds / span (headline); frames/s; chunks/s beside videos/s; sustainable realtime streams |
 | V2 | latency | seq: service latency and latency per footage minute; c<N>: latency at offered concurrency; blast: batch span, completion curve, time to first result with its basis string. Never cross-compared between modes |
 | V3 | efficiency | **cpu_s_per_footage_min** (primary), cpu_s per frame / detection / chunk / video; effective cores; scaling efficiency; threads activated |
-| V4 | resources | peak anon RSS; cold-to-ready; LangGraph stage split and framework overhead (RocketRide is a black box here, and that asymmetry is reported); storage amplification; driver CPU and idle-burden cores (matched) |
+| V4 | resources | peak memory (cgroup `memory.current`, which includes page cache; the anon figure is computed but not printed); cold-to-ready; LangGraph stage split and framework overhead (RocketRide is a black box here, and that asymmetry is reported); driver CPU and idle-burden cores (matched). Storage amplification is in the spec and measured by hand, not computed |
 | V5 | cost | usd per 1000 footage hours = $/h / x_realtime x 1000 (c7i.8xlarge $1.428/h); videos per day per box |
 
 Percentiles are nearest-rank. Anything that cannot be computed is `None`,
@@ -100,27 +103,28 @@ never 0 and never infinity.
    `evidence_grade: SIZING`. The PDF harness accepts cross-mode or cross-cell
    determinism (`bench/cross_mode_determinism.py`) as the basis for a 1-rep
    `RUN PASS`, and records that basis.
-7. **Profiled runs are diagnostic.** yappi on the LangGraph arm costs about
-   1.5 % on PDF and 24 % on video; `RR_TRACE` on RocketRide needs an untraced
-   control cell. Never quote a profiled run's speed as performance.
+7. **Profiled runs are diagnostic.** Profiling costs wall time (a few
+   percent on PDF, far more on video, measured on another deployment);
+   `RR_TRACE` on RocketRide needs an untraced control cell. Never quote a
+   profiled run's speed as performance.
 8. **Threads requested is not threads activated is not effective cores.**
    `RR_THREADS` is recorded as requested; the engine's pool is not observable
-   from the client (`threads_observed: null`); effective cores come from the
-   cgroup.
+   from the client (`rocketride_threads_observed: null` in provenance);
+   effective cores come from the cgroup.
 
 ## 5. Record schema, in brief
 
 PDF `per_doc.jsonl` fields the gates read: `doc`, `ok`, `reason`,
-`submit_ns`, `completion_ns`, `n_chunks`, `chunk_sha256[]`, `vector_dim`,
-`l2_norm_min/max`, `identity_ok`, and for LangGraph additionally
-`sha_header_ok`, `vectors_finite`. Batch modes add `batch_index`,
-`batch_size`. Absence of a required-true field fails structure; it never
-defaults to pass.
+`submit_ns`, `completion_ns`, `input_sha256`, `n_chunks`, `total_chars`,
+`chunk_sha256[]`, `vector_dim`, `l2_norms_minmax`, `identity_ok`, and for
+LangGraph additionally `sha_header_ok`, `vectors_finite`. Batch modes add
+`batch_index`, `batch_size`. Absence of a required-true field fails
+structure; it never defaults to pass.
 
-Video `per_doc.jsonl` adds `input_sha256`, `duration_s`, `n_frames_est`,
-`n_detections`, `total_chars`, `embedding_sha256`, and in matched postures
-`manifest_index`, `token_index`, `project_id`, `task_pid` (RocketRide) or
-`worker_pid`, `port` (LangGraph). `progress.jsonl` has one line per video as
+Video `per_doc.jsonl` adds `duration_s`, `n_frames_est`, `n_detections`,
+`embedding_sha256`, and in matched postures `manifest_index`, `token_index`,
+`project_id`, `task_pid` (RocketRide) or `worker_pid`, `worker_port`
+(LangGraph). `progress.jsonl` has one line per video as
 it finished; `engine_cgroup.csv` is the sampler; `shot_meta` carries
 `measurement_start_epoch_ns` / `measurement_end_epoch_ns`, which window the
 CPU counters so warm-up, boot and idle windows are excluded.

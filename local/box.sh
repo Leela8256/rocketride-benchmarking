@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# box.sh — single local entrypoint for the AWS benchmark box.
-# See COMMS.md for the communication model. Usage:
+# box.sh - single local entrypoint for the AWS benchmark box.
+# See docs/AWS_BOX_ACCESS.md for the communication model. Usage:
 #   ./box.sh login                    SSO login (opens browser, human approves)
 #   (settings: copy local.env.example to local.env first)
 #   ./box.sh status                   instance state
 #   ./box.sh start                    start instance, wait until SSM is Online
 #   ./box.sh stop                     stop instance
 #   ./box.sh shell                    interactive SSM shell (for humans)
-#   ./box.sh run  '<cmd>'             one-shot command via stdin-piped session
-#   ./box.sh runx '<cmd>'             one-shot via AWS-StartInteractiveCommand (test first)
+#   ./box.sh run  '<cmd>'             one-shot command via stdin-piped session (one line, POSIX sh)
 #   ./box.sh launch <name> '<cmd>'    long run: nohup on box, log ~/logs/<name>.log
 #   ./box.sh tail <name> [lines]      tail that log (default 50)
 #   ./box.sh ps                       running launched jobs on the box
@@ -28,7 +27,7 @@ if [ -f "$HERE/local.env" ]; then
   done < "$HERE/local.env"
 fi
 
-PROFILE="${BOX_PROFILE:-leela}"
+PROFILE="${BOX_PROFILE:?set BOX_PROFILE in local/local.env (docs/AWS_BOX_ACCESS.md section 3)}"
 INSTANCE="${BOX_INSTANCE:-i-0bdc8b1e18f2a5348}"
 REGION="${BOX_REGION:-us-east-1}"
 A=(aws --profile "$PROFILE" --region "$REGION")
@@ -51,12 +50,13 @@ ssm_online() {
 #
 # `script -q /dev/null` allocates a PSEUDO-TTY for the session plugin. Since
 # the box's SSM agent auto-updated to 3.3.4793.0 (2026-08-19), no-TTY piped
-# sessions die instantly with "Cannot perform start session: EOF" — and each
+# sessions die instantly with "Cannot perform start session: EOF" - and each
 # one ALSO stays "Connected" server-side, so 25 of them hit the per-instance
 # session cap and lock the box out entirely (terminate-session is denied to
 # this role; only a stop/start or the idle timeout clears them). Verified
 # same-day: the identical piped command works under a pty. macOS `script`
-# syntax; tr strips the \r the pty adds.
+# syntax; on Linux use: script -q -c "$(printf '%q ' "${A[@]}" ssm start-session --target "$INSTANCE")" /dev/null
+# tr strips the \r the pty adds.
 pipe_run() {
   local cmd="$1" out rc
   out=$({ sleep 3; printf '%s\n' "$cmd" 'echo "__RC=$?"' 'exit'; } \
@@ -64,7 +64,7 @@ pipe_run() {
         | tr -d '\r') || true
   printf '%s\n' "$out"
   rc=$(printf '%s\n' "$out" | grep -o '__RC=[0-9]*' | tail -1 | cut -d= -f2)
-  [ -n "${rc:-}" ] || die "no exit marker in session output — session may not have opened"
+  [ -n "${rc:-}" ] || die "no exit marker in session output - session may not have opened"
   return "$rc"
 }
 
@@ -84,7 +84,7 @@ case "${1:-}" in
     fi
     echo -n "waiting for SSM agent"
     for _ in $(seq 1 30); do
-      [ "$(ssm_online)" = "Online" ] && { echo " — Online"; exit 0; }
+      [ "$(ssm_online)" = "Online" ] && { echo " - Online"; exit 0; }
       echo -n "."; sleep 5
     done
     die "SSM agent not Online after 150s"
@@ -99,12 +99,6 @@ case "${1:-}" in
   run)
     [ $# -ge 2 ] || die "usage: box.sh run '<cmd>'"
     pipe_run "$2"
-    ;;
-  runx)
-    [ $# -ge 2 ] || die "usage: box.sh runx '<cmd>'"
-    params=$(python3 -c 'import json,sys; print(json.dumps({"command":[sys.argv[1]]}))' "$2")
-    exec "${A[@]}" ssm start-session --target "$INSTANCE" \
-      --document-name AWS-StartInteractiveCommand --parameters "$params"
     ;;
   launch)
     [ $# -ge 3 ] || die "usage: box.sh launch <name> '<cmd>'"

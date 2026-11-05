@@ -81,16 +81,19 @@ time, one engine per arm. Provenance or it did not happen.
 
 A benchmark document is one `.avi` with sound: the AMI mirror ships the
 camera file without audio, so staging stream-copies `Closeup1.avi` and
-`Mix-Headset.wav` into one file (bitexact flags, metadata stripped). The
-runners pull the corpus from S3 to `~/bench_corpus_ami_full` on first use
-(about 3 minutes at 158 MB/s) and verify every file's sha256 against the
-manifest before either arm runs. Stage from the mirror only if the S3 copy
-is gone.
+`Mix-Headset.wav` into one file (bitexact flags, metadata stripped).
+`run/native170.sh` pulls the corpus from S3 to `~/bench_corpus_ami_full` on
+first use (about 3 minutes at 158 MB/s); `run/matched8x4_ami.sh` does not,
+and exits with `FATAL: no corpus manifest` if that directory is missing, so
+run `native170.sh` once or pull it by hand:
+`aws s3 cp --recursive s3://rocketride-benchmark-data/leela/corpus/ami_full/ ~/bench_corpus_ami_full/`.
+Both runners verify every measured file's sha256 against the manifest before
+either arm runs. Stage from the mirror only if the S3 copy is gone.
 
 ## 5. Run it
 
 On the box, from a clone of this repository, in `aws_video/`. Every runner
-is launched detached from the laptop:
+is launched detached from the laptop, on one line:
 
 ```bash
 bash local/box.sh launch <name> 'cd ~/rocketride-benchmarking/aws_video && <ENV> bash run/<runner>.sh'
@@ -100,7 +103,8 @@ bash local/box.sh tail <name>
 ### 5.1 First run: a small native run of both arms (about 25 minutes)
 
 ```bash
-N=4 WARM=2 LG_MODE=c4 bash run/native170.sh
+RUN_NAME=smoke-n4-$(date -u +%Y%m%dT%H%M%SZ) N=4 WARM=2 LG_MODE=c4 bash run/native170.sh
+# expected: FINAL line rr=0 lg=0 report=0; determinism SKIP (single rep, evidence_grade SIZING), every other gate PASS
 ```
 
 Pulls `ami_full` from S3 if missing, builds `rocketride`, `langgraph` and
@@ -120,10 +124,11 @@ Turns the response into explicit verdicts: lane routing, audio demux and
 transcription, frame lane, structure, content determinism, order
 determinism. Rep 1 on a cold engine is init plus work and is never a number.
 
-### 5.3 Default posture, full corpus (the Run C shape; about 3.5 h)
+### 5.3 Default posture, full corpus (about 3.5 h)
 
 ```bash
 bash run/native170.sh                             # N=168 WARM=2, RR blast, LG c170, both arms
+LG_MODE=c32 bash run/native170.sh                 # Run C itself used c32 for the LangGraph arm
 NATIVE_ARMS=rr bash run/native170.sh              # one arm only
 RR_LENSORT_PATCH=1 NATIVE_ARMS=rr bash run/native170.sh   # engine A/B
 ```
@@ -138,9 +143,7 @@ Knobs: `N` (168), `WARM` (2, a count), `RR_MODE` (blast), `LG_MODE` (c170),
 bash run/matched8x4_ami.sh                                    # RR 8 tasks x BLAS 4, then LG 8 procs x torch 4, c32
 ARM_ORDER=rr bash run/matched8x4_ami.sh                       # RocketRide cell only
 ARM_ORDER=lg1 PAIR_RR=results/<rr run>/rr bash run/matched8x4_ami.sh   # LG one-port cell, paired with an earlier RR cell
-ARM_ORDER="rr lgip" RR_TASKS=6 RR_BLAS_THREADS=5 RR_THREADS_PER_CONN=4 RR_INFLIGHT_PER_TASK=4 \
-  LG_TORCH_THREADS=5 LG_WORKERS=1 LG_PORT_BASE=8200 LG_PER_ENDPOINT_CONCURRENCY=24 LG_EXPECT_DETECT_CONC=6 \
-  bash run/matched8x4_ami.sh                                  # the 6x5 pair: 6 engine tasks vs 1 in-process uvicorn
+ARM_ORDER="rr lgip" RR_TASKS=6 RR_BLAS_THREADS=5 RR_THREADS_PER_CONN=4 RR_INFLIGHT_PER_TASK=4 LG_TORCH_THREADS=5 LG_WORKERS=1 LG_PORT_BASE=8200 LG_PER_ENDPOINT_CONCURRENCY=24 LG_EXPECT_DETECT_CONC=6 bash run/matched8x4_ami.sh   # the 6x5 pair: 6 engine tasks vs 1 in-process uvicorn
 ```
 
 | variable | default | meaning |
@@ -180,22 +183,28 @@ variables set. Full detail: `MATCHED_POSTURE.md`, `RUN_MATCHED6x5_WALKTHROUGH.md
 | `run/rr_threads_sweep.sh` | the `threads=` sweep on one task (result: flat) |
 | `run/rr_best_configs.sh`, `run/lg_best_configs.sh`, `run/films_best_configs.sh` | the best cells of each arm |
 | `run/nodeprofile_ami.sh` | per-node attribution: RR traced cell + control cell + LG per-node timings + per-video sequential cell |
-| `run/films_v2.sh`, `run/films100_headtohead.sh`, `run/rr_films_postures.sh` | the film corpus runs (subsets 10, 100, 500) |
+| `run/films_v2.sh`, `run/films100_headtohead.sh`, `run/rr_films_postures.sh` | the film corpus runs (subsets 10, 50, 100, 500) |
 | `run/run_waves.sh` | corpora larger than disk: S3 -> RAM -> engine -> S3, container removed per wave, resumable |
 | `run/stage_corpus.sh`, `run/stage_films_jit.py`, `run/freeze_films.py` | corpus staging and sealing |
 | `run/headtohead.sh`, `run/native60.sh`, `run/run_detect.sh`, `run/run30h.sh`, `run/run_s3test.sh`, `run/archive10.sh`, `run/capture_one.sh`, `run/smoke_lg_box.sh` | the earlier, smaller shapes; kept because results reference them |
 
 ### 5.6 Running on the official 3.5.0.584 engine
 
-The video Dockerfile builds 3.3.1. To run the official build instead, build
-the PDF arm's image with the official env, tag it, and select the override
-compose file (details in `../docs/DOCKER_AND_ENVELOPE.md` section 3):
+The video Dockerfile builds 3.3.1. To run the official build instead, make
+sure the frozen image `bench-rocketride:official-87f530f` exists (build and
+tag it from the PDF arm only if it is missing; the exact steps and the
+limits of the override are in `../docs/DOCKER_AND_ENVELOPE.md` section 3),
+then source the env file that selects the override compose file and run:
 
 ```bash
-cd ~/rocketride-benchmarking/aws_pdf && . run/official-engine-20261021.env && docker compose build rocketride
-docker tag bench-rocketride:latest bench-rocketride:official-87f530f
-cd ~/rocketride-benchmarking/aws_video && . run/official-engine-20261021.env && bash run/native170.sh
+bash local/box.sh launch vid350 'cd ~/rocketride-benchmarking/aws_video && . run/official-engine-20261021.env && NATIVE_ARMS=rr bash run/native170.sh'
 ```
+
+The override retargets the default `rocketride` service; verify the matched
+service's image with `docker compose config --images` before using it with
+`matched8x4_ami.sh`. `native170.sh` records no image id, so save
+`docker image inspect bench-rocketride:official-87f530f` and the engine's
+`/version` output next to the run.
 
 ## 6. Postures, named
 
@@ -242,9 +251,10 @@ python3 bench/report.py --arms ./run/rr ./run/lg
 ## 8. Gates and numbers
 
 Per arm: `census`, `structure`, `frame_law`, `self_duplication`,
-`corpus_pin`, `determinism` (single rep = fail by design, run labelled
-SIZING), `metric_coverage`, and in matched postures `task_census` /
-`worker_census`. Across arms: `input_identity`, `frame_parity` (exact),
+`corpus_pin`, `determinism` (single rep = NOT_RUN, reported as SKIP, and the
+run is graded SIZING), `metric_coverage`, and in matched postures
+`task_census` / `worker_census`. Across arms: `input_identity`,
+`frame_parity` (PASS when identical, WARN within 10 %, FAIL beyond),
 `detection_ratio` (warn outside 0.90 to 1.10), `chunk_ratio` (hard 0.4 to
 2.5), `chunk_parity_tight` (warn), `workload_ratio`. Byte parity is
 deliberately not required: the arms run different `rfdetr` package
@@ -255,7 +265,17 @@ Headline numbers: `x_realtime` (footage hours per wall hour),
 `usd_per_1k_footage_hours`. Latency is mode-labelled and never compared
 across modes. `report.py` exits non-zero on any hard gate failure.
 
-## 9. Traps specific to video
+## 9. Reference documents
+
+`RESULTS*.md`, `MATCHED_POSTURE.md`, `METRICS.md`, `METRICS_EXPLAINED.md`,
+`SETUP_AND_RUN.md`, `DATA_FLOW_PLAN.md` and `LONG_VIDEO_SOURCES.md` were
+written inside the original working repository. They cite `runs/` and
+`results/` bundles that are not in this repository (use the S3 paths they
+also give), and two of them mention a sibling document
+(`VIDEO-METRICS-IMPLEMENTED.md`) and a script (`corpus/fetch_archive.sh`)
+that were never part of this folder.
+
+## 10. Traps specific to video
 
 The engine keeps every uploaded video in container scratch until the
 container is removed (teardown between arms is load-bearing). One wave must

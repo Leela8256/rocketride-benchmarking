@@ -2,9 +2,10 @@
 # Install AWS CLI v2 into the user's home. Runs ON the box.
 #
 # WHY THIS EXISTS: the box is an Ubuntu AMI, and Canonical's images do not
-# ship the AWS CLI (Amazon Linux does). There is no sudo, so apt/snap are
-# out. The official installer supports a user-dir install, which is enough
-# for `aws s3 cp` via the instance role.
+# ship the AWS CLI (Amazon Linux does). We avoid apt/snap on the shared box
+# (sudo is used only for the /usr/local/bin symlink afterwards). The official
+# installer supports a user-dir install, which is enough for `aws s3 cp` via
+# the instance role.
 #
 # python3's zipfile is used instead of unzip (also absent, also no sudo) --
 # note extractall() drops the executable bit, hence the chmod.

@@ -9,7 +9,7 @@ ok()   { pass=$((pass+1)); printf 'PASS  %s\n' "$1"; }
 bad()  { fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; }
 info() { printf 'INFO  %s\n' "$1"; }
 
-echo "== prod-bench AWS preflight — $(date -u +%Y-%m-%dT%H:%M:%SZ) =="
+echo "== benchmark box preflight — $(date -u +%Y-%m-%dT%H:%M:%SZ) =="
 
 # Identity / platform
 arch=$(uname -m)

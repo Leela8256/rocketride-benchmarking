@@ -22,7 +22,7 @@ Corpus: GovDocs1 PDFs sorted by basename (`corpus/fetch_govdocs.sh`). The
 | batch10k RR | 2026-09-15 | RR only, b16 / b32 / b64, 24-core arm, 1 rep each | 11.64 / 14.09 / 17.24 chunks/s; 3.79 / 4.63 / 5.64 cores; 6.98 / 7.06 / 7.02 cpu-s/doc (flat); max latency about 1,680 s at every size | none | RUN PASS (cyclic cross-cell determinism 9,913/9,913) | `batch10k-2026-09-15/batch10k-b<B>-<stamp>/` |
 | batch10k LG | 2026-09-21 | LG only, same cells | none | 25.53 / 32.74 / 41.79 chunks/s; 2.85 / 4.05 / 5.63 cores; 2.40 / 2.66 / 2.89 cpu-s/doc; max about 220 s | RUN PASS (same basis) | `batch10k-lg-2026-09-21/` |
 | PR #2197 A/B | 2026-09-08 | RR only, 1k docs, blast, stock vs length-sorted batching | +0.61 % chunks/s, -1.67 % cpu-s/chunk | none | SIZING, 1 rep | `pr2197pdf-{stock,patched}-20260908T223814Z/` |
-| profiler campaign | 2026-10-21 | official 3.5.0.584, 1k docs, one profiled run per arm, isolated cpusets | diagnostic captures (yappi, apaevt_flow) | diagnostic captures | DIAGNOSTIC, not performance | see `aws_pdf/README.md` profiler section |
+| profiler campaign | 2026-10-21 | official 3.5.0.584, 1k docs, one profiled run per arm, isolated cpusets | diagnostic captures (yappi, apaevt_flow) | diagnostic captures | DIAGNOSTIC, not performance | no shared S3 path recorded; the bundle is with Leela. Method: `aws_pdf/README.md` section 10 |
 
 Headlines that have held across every PDF run: RocketRide spends 1.5x
 (c128, threads=32) to 2.9x (b16, default pool) LangGraph's CPU per document;
@@ -44,7 +44,7 @@ Corpus `ami_full`: all 170 usable AMI meetings (168 measured + 2 warm,
 | RR matched 8x4 | 2026-08-26 | 8 tasks, BLAS 4, sharded blast, admission unbounded | 166.1x, 11.07 frames/s, 23.87 cores, 8.62 cpu-s/footage-min, $8.60, peak 57.4 GB | none | SIZING; task_census 8/8 PASS | `matched8x4-ami-rep1-20260826T064153Z/rr` |
 | RR matched 6x4, threads=32 | 2026-08-26 | 6 tasks, BLAS 4, `use(threads=32)` per connection | 177.2x, 11.81 frames/s, 21.39 cores, 7.24 cpu-s/footage-min, $8.06 | none | SIZING; task_census 6/6 PASS | `matched6x4-ami-rep1-20260826T155110Z/rr` |
 | LG one-port 8 workers | 2026-08-26 | `uvicorn --workers 8` on one port, torch 4/1, c32 | none | 100.7x, 6.71 frames/s, 11.26 cores, 6.71 cpu-s/footage-min, $14.18; worker skew 49/43/29/15/14/11/4/3 | SIZING; paired with RR matched 8x4 | `matched8x4-ami-rep1-20260826T075823Z/lg` |
-| RR thread sweep | 2026-08-24 | 1 task, threads unset / 8 / 32 / 64, 16 videos | 5.93 to 5.97 cores at every setting (flat) | none | probe | `rrsweep-*` |
+| RR thread sweep | 2026-08-23/24 | 1 task, threads unset / 8 / 32 / 64, 16 videos | 5.93 to 5.97 cores at every setting (flat) | none | probe | `rrsweep-20260823*` (one prefix per setting) |
 | films500 | 2026-08-24/25 | 498 Internet Archive films, 674.75 h; RR default blast vs LG c32 | 35.0x, 6.88 cores, 11.79 cpu-s/footage-min, $40.79, 19.27 h | 154.6x, 25.46 cores, 9.88 cpu-s/footage-min, $9.24, 4.36 h | SIZING; LG arm rerun after the streaming fix, paired | `films500-20260824T073256Z/rr`, `films500-20260825T061529Z/` |
 
 Headlines: per-unit CPU is within about 10 % between arms on every video

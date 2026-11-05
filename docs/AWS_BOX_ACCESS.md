@@ -14,7 +14,7 @@ each cost at least one run.
 | region / zone | `us-east-1`, us-east-1a |
 | OS | Ubuntu 22.04, Docker 29.x with the compose plugin, cgroup v2, no `aws` CLI preinstalled |
 | user | you land as `ssm-user`; docker works without sudo; `sudo` works for symlinks and the like |
-| AWS account | `250017478984` (named `rocketride-dev` in SSO; it is the real production account, so treat everything outside this instance as untouchable) |
+| AWS account | `250017478984` (named `rocketride-dev` in SSO; treat everything in it outside this instance as untouchable) |
 | permission set | `BenchmarkBoxOperator` (role `AWSReservedSSO_BenchmarkBoxOperator_*`) |
 | SSO start URL | `https://ssoins-7223225ee069e552.portal.us-east-1.app.aws/#/`, SSO region `us-east-1` |
 | S3 bucket | `s3://rocketride-benchmark-data/` ; our corpora and results live under the `leela/` prefix |
@@ -46,9 +46,14 @@ Consequences:
 
 - You can never curl a box port from the laptop. Every health check and every
   driver runs on the box.
-- Code reaches the box only by `git clone` of this repository. If the
-  repository is private, the clone needs a token:
-  `git clone https://<github-token>@github.com/Leela8256/rocketride-benchmarking.git`.
+- Code reaches the box only by `git clone` of this repository. Everyone on
+  the box lands as the same `ssm-user`, so anything you put in `.git/config`
+  is shared with every other user of the box. If the repository is private,
+  clone with a short-lived fine-grained token that has read-only access,
+  then remove it from the remote URL:
+  `git clone https://<token>@github.com/Leela8256/rocketride-benchmarking.git ~/rocketride-benchmarking && git -C ~/rocketride-benchmarking remote set-url origin https://github.com/Leela8256/rocketride-benchmarking.git`.
+  Later `git pull`s will then prompt; paste the token when asked. If you work
+  from a fork, clone the fork instead.
 - Data reaches the box only by download on the box (corpora come from their
   public sources or from the S3 copies already staged).
 - Results leave only via `aws s3 cp` from the box, using the instance role,
@@ -85,7 +90,7 @@ The SSO token expires after a few hours. When a `box.sh` command fails with
 "Token has expired", run `bash local/box.sh login` again. Runs on the box are
 unaffected: they use the instance role.
 
-## 4. `local/box.sh`, the only laptop command
+## 4. `local/box.sh`, the only laptop command that touches the box
 
 ```
 bash local/box.sh login                  SSO login (opens the browser, you approve)
@@ -94,10 +99,13 @@ bash local/box.sh start                  start the instance, wait until the SSM 
 bash local/box.sh stop                   stop the instance (disk survives)
 bash local/box.sh shell                  interactive shell (for humans; 20 min idle timeout)
 bash local/box.sh run '<cmd>'            one command, output returned, exit code preserved
-bash local/box.sh launch <name> '<cmd>'  long run: nohup on the box, log in ~/logs/<name>.log
+bash local/box.sh launch <name> '<cmd>'  long run: nohup bash -c on the box, log in ~/logs/<name>.log
 bash local/box.sh tail <name> [lines]    tail that log
 bash local/box.sh ps                     launched jobs still running
 ```
+
+`BOX_PROFILE` must be set (in `local/local.env` or the environment); the
+script refuses to run without it.
 
 How `run` works: it pipes the command and an `exit` into a normal SSM session,
 under a pseudo-terminal, and appends an `__RC=<n>` marker so the remote exit
@@ -106,13 +114,22 @@ to 3.3.4793.0 a session without a TTY dies instantly with
 `Cannot perform start session: EOF` and stays "Connected" server-side.
 Twenty-five such zombies hit the per-instance session cap and lock everyone
 out until a stop/start or the idle timeout clears them. The script uses the
-macOS `script -q /dev/null <cmd>` form; on a Linux laptop change it to
-`script -q -c "<cmd>" /dev/null`.
+macOS `script -q /dev/null <cmd>` form; on a Linux laptop replace that line
+in `pipe_run` with
+`| script -q -c "$(printf '%q ' "${A[@]}" ssm start-session --target "$INSTANCE")" /dev/null 2>&1 \`.
 
-Rules for `run`:
+Rules for `run` and `launch`:
 
-- Keep each command under ten minutes. Longer work goes through `launch` and
-  `tail`.
+- Keep each `run` command under ten minutes. Longer work goes through `launch`
+  and `tail`.
+- **One line per command.** `launch` quotes the command with `printf %q`; a
+  command containing a newline turns into a `$'...'` form that the box's
+  session shell may not understand. Chain steps with `&&` on one line.
+- `run` executes in the SSM session's own shell, which may be plain `sh`.
+  Keep it POSIX. Anything bash-specific (for example sourcing
+  `aws_video/run/official-engine-20261021.env`, which uses `BASH_SOURCE`)
+  goes through `launch`, which runs `bash -c`, or inside an explicit
+  `bash -c '...'`.
 - Never put a marker string you intend to grep for inside the remote command:
   the pseudo-terminal echoes the command back, and the echo matches your
   grep. Grep on the plain `tail` output instead.
@@ -125,25 +142,42 @@ Rules for `run`:
 bash local/box.sh login
 bash local/box.sh start
 bash local/box.sh run 'whoami && uname -m && nproc && df -h / | tail -1'
-bash local/box.sh run 'git clone https://github.com/Leela8256/rocketride-benchmarking.git'
-bash local/box.sh run 'cd rocketride-benchmarking/aws_pdf && bash run/preflight.sh'
-bash local/box.sh run 'cd rocketride-benchmarking/aws_pdf && bash run/install_awscli.sh'
+bash local/box.sh run 'test -d ~/rocketride-benchmarking || git clone https://github.com/Leela8256/rocketride-benchmarking.git ~/rocketride-benchmarking'
+bash local/box.sh run 'cd ~/rocketride-benchmarking/aws_pdf && bash run/install_awscli.sh'
 bash local/box.sh run 'sudo ln -sf /home/ssm-user/.local/bin/aws /usr/local/bin/aws && aws --version'
+bash local/box.sh run 'cd ~/rocketride-benchmarking/aws_pdf && bash run/preflight.sh'
 bash local/box.sh run 'aws sts get-caller-identity && aws s3 ls s3://rocketride-benchmark-data/leela/'
+bash local/box.sh run 'docker ps -a --format "{{.Names}}\t{{.Status}}\t{{.Label \"com.docker.compose.project\"}}"'
 ```
 
-`preflight.sh` is read-only and checks architecture, cores, memory, disk,
-docker, compose, git, python3, curl and network reachability. The
-`install_awscli.sh` step exists because the Ubuntu image ships no AWS CLI;
-the installer puts it in `~/.local/bin`, which non-login shells (nohup) do
-not see, hence the symlink into `/usr/local/bin`. Without that symlink a
-detached run silently skips its S3 upload with "no aws cli/role". Re-check
-the symlink after any box change.
+Order matters: `install_awscli.sh` comes before `preflight.sh`, because the
+preflight's instance-role check needs the CLI and fails without it. The
+installer exists because the Ubuntu image ships no AWS CLI; it puts the
+binary in `~/.local/bin`, which non-login shells (nohup) do not see, hence
+the symlink into `/usr/local/bin`. Without that symlink a detached run
+silently skips its S3 upload with "no aws cli/role". Re-check the symlink
+after any box change. `preflight.sh` is read-only and checks architecture,
+cores, memory, disk, docker, compose, git, python3, curl, network
+reachability and the instance role.
+
+The last line matters on this shared box. An older clone of the harness
+(`~/bench_langgraph_prod`, compose projects `aws_bench` and `aws_videobench`)
+left stopped containers named `bench-langgraph`, `bench-rocketride`,
+`bench-tika`, `videobench-*`. This repository's compose projects are
+`aws_pdf` and `aws_video`, but the container names are the same, so the
+first `docker compose up` fails with "container name already in use" until
+those stopped containers are removed (`docker rm <name>`; they hold nothing
+but the engine's old upload scratch). Two further consequences of the
+project rename: the first video run creates a new model-cache volume
+(`aws_video_rr-model-cache`) and downloads the models again (that is
+warm-up, never measured), and both clones build to the same `:latest` image
+tags, so a build in one clone replaces the other's image.
 
 If the repository was already cloned (by someone else, on the shared box),
 `git -C ~/rocketride-benchmarking pull --ff-only` is the update path. Never
-edit code on the box: fix on the laptop, commit, push, pull on the box. The
-clone is disposable; S3 holds the results.
+edit code on the box: fix on the laptop, commit, push (to this repository if
+you have write access, otherwise to your fork, and clone the fork on the
+box), pull on the box. The clone is disposable; S3 holds the results.
 
 ## 6. Long runs
 
@@ -160,9 +194,12 @@ It survives the session closing and the laptop sleeping. It does not survive
 the box stopping itself: the box auto-stops after about an hour below 20 %
 CPU. A measured run keeps CPU up, so that is only a risk during long
 low-CPU phases (corpus extraction, hashing, image builds, report writing).
-The campaign runners carry a keepalive busy loop for those phases and pause
-it (SIGSTOP) during measured spans. Never add a keepalive of your own inside
-a measured span: it contaminates the CPU numbers.
+Some runners carry a keepalive busy loop for those phases: the video
+matched runner pauses it (SIGSTOP) during measured spans; the PDF campaign
+runners pin it to the last core, inside the client's CPU set; the films and
+sweep runners and the staging scripts leave it running. Never add a
+keepalive of your own inside a measured span: it contaminates the CPU
+numbers.
 
 If the box stops mid-run, nothing on disk is lost. `bash local/box.sh start`,
 inspect the log, and either resume (the wave and campaign runners are
