@@ -1,0 +1,13 @@
+# LangGraph video-detect arm. Versions float within majors for the smoke;
+# pin exactly (pip freeze) before any measured benchmark run.
+langgraph>=0.2
+langchain-text-splitters>=0.3
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+anyio>=4
+requests>=2.31
+rfdetr>=1.0
+sentence-transformers>=3.0
+pillow>=10
+imageio-ffmpeg>=0.5

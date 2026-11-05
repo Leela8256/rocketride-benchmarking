@@ -1,0 +1,223 @@
+# aws_video — RocketRide video pipeline, SMOKE configuration.
+#
+# This compose file is for the smoke test, NOT for measurement:
+#   - no cpuset envelope (nothing is being compared yet)
+#   - intra-op threads deliberately NOT pinned to 1, so a 21-minute meeting
+#     transcribes at tolerable speed on a cold engine
+# When this grows into a matched benchmark, copy the envelope discipline from
+# aws_pdf/docker-compose.yml verbatim: shared BENCH_CPUSET, OMP_NUM_THREADS=1
+# on both arms, memory uncapped-but-measured, one arm at a time.
+
+services:
+  rocketride:
+    build:
+      context: ./arms/rocketride
+      dockerfile: Dockerfile
+      args:
+        # PR #2197 length-sorted embedding batching. 0 = stock, 1 = patched.
+        RR_LENSORT_PATCH: "${RR_LENSORT_PATCH:-0}"
+    image: videobench-rocketride:3.3.1
+    platform: linux/amd64
+    container_name: videobench-rocketride
+    environment:
+      ROCKETRIDE_URI: ws://127.0.0.1:5565/task/service
+      ROCKETRIDE_APIKEY: local-dev
+      RR_HOST: "0.0.0.0"           # MUST be explicit: without it the engine
+                                   # binds an interface unreachable from the host
+    ports: ["5565:5565"]
+    volumes:
+      # Persist pip/HF/whisper/rf-detr downloads across container recreations.
+      # First video pipeline start on a FRESH volume pulls several GB (torch
+      # tree, whisper base, rf-detr-base.pth); with this volume that price is
+      # paid once per box, not once per `compose up`.
+      - rr-model-cache:/root/.cache
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket,sys; s=socket.socket(); s.settimeout(3); sys.exit(s.connect_ex(('127.0.0.1',5565)))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  langgraph:
+    # The LangGraph arm — same service the local and box smokes verified.
+    # Never runs at the same time as rocketride in a measured run (one arm
+    # at a time under the envelope).
+    build:
+      context: ./arms/langgraph
+      dockerfile: Dockerfile
+    image: videobench-langgraph:v1
+    platform: linux/amd64
+    container_name: videobench-langgraph
+    ports: ["8200:8200"]
+    # films500 post-mortem (2026-08-24): explicit limit so a memory blow-up
+    # is a contained, visible OOM (exit 137) instead of a host-wide kill;
+    # MALLOC_ARENA_MAX curbs glibc arena growth under 32 request threads.
+    mem_limit: 52g
+    environment:
+      MALLOC_ARENA_MAX: "2"
+    volumes:
+      - rr-model-cache:/root/.cache   # shared: rfdetr + miniLM download once per box
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8200/health/ready',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+
+  smoke:
+    # The CLIENT, in its own container: same discipline as the PDF bench —
+    # client CPU/RSS must not land in the engine's cgroup, and the video
+    # reaches the engine over a network hop like every future benchmark doc.
+    build:
+      context: ./smoke
+      dockerfile: smoke.Dockerfile
+    image: videobench-smoke:latest
+    platform: linux/amd64
+    container_name: videobench-smoke
+    profiles: ["client"]          # never started by `up`; used via `compose run`
+    environment:
+      ROCKETRIDE_URI: "${ROCKETRIDE_URI:-ws://rocketride:5565/task/service}"
+      ROCKETRIDE_APIKEY: local-dev
+      # matched posture (bench_video_matched.py / lg_driver_matched.py)
+      LG_HOST: "${LG_HOST:-langgraph}"
+      LG_URL: "${LG_URL:-http://langgraph:8200}"
+      RR_TASKS: "${RR_TASKS:-8}"
+      RR_BLAS_THREADS: "${RR_BLAS_THREADS:-4}"
+      # per-connection admission cap -> use(threads=N); empty = omitted (engine default 64)
+      RR_THREADS_PER_CONN: "${RR_THREADS_PER_CONN:-}"
+      # videos in flight per task, client-bounded; 0 = one native batch per shard
+      RR_INFLIGHT_PER_TASK: "${RR_INFLIGHT_PER_TASK:-4}"
+      LG_TORCH_THREADS: "${LG_TORCH_THREADS:-4}"
+      LG_WORKERS: "${LG_WORKERS:-8}"
+      LG_PORT_BASE: "${LG_PORT_BASE:-8201}"
+      LG_PER_ENDPOINT_CONCURRENCY: "${LG_PER_ENDPOINT_CONCURRENCY:-4}"
+      LG_EXPECT_DETECT_CONC: "${LG_EXPECT_DETECT_CONC:-1}"   # readback gate: predicts allowed per process
+      BENCH_IDLE_S: "${BENCH_IDLE_S:-30}"
+      # Which pipe contract this run executes — default is the dual-lane
+      # (audio+vision) pipe; run scripts override for variants like
+      # benchmark_video_detect.pipe.
+      BENCH_PIPE: "${BENCH_PIPE:-/pipe/benchmark_video.pipe}"
+      # Generous: rep 1 of a cold engine includes pip-installing the whisper +
+      # rfdetr stacks and downloading model weights before any real work.
+      BENCH_TIMEOUT_S: "${BENCH_TIMEOUT_S:-5400}"
+      # Engine pipeline TTL — must exceed BENCH_TIMEOUT_S (driver validates;
+      # a films500 blast runs ~18 h and a short ttl kills the pipe mid-batch).
+      # Empty -> driver default BENCH_TIMEOUT_S + 7200.
+      RR_PIPE_TTL_S: "${RR_PIPE_TTL_S:-}"
+      # Engine worker-pool request, passed to use(threads=N). Unset = engine
+      # default pool (how every video run before 2026-08-20 ran). Requested
+      # is not activated — effective cores come from the cgroup sampler.
+      RR_THREADS: "${RR_THREADS:-}"
+      # Per-node timing via the engine's own apaevt_flow traces
+      # (metadata|summary|full). Empty = off, which is what every throughput
+      # run must use: the control for a traced run is the same driver unset.
+      RR_TRACE: "${RR_TRACE:-}"
+    volumes:
+      - "${CORPUS:-./corpus}:/corpus:ro"
+      - "${WARM:-./corpus}:/warm:ro"       # matched posture: disjoint warm fixtures
+      - ./results:/results
+      - ./pipe:/pipe:ro
+      - ./bench:/bench:ro     # batch driver mounted, not baked — no rebuild to iterate
+
+  # ---- MATCHED POSTURE (8 processes x 4 torch threads) — separate services so
+  # the default posture above is untouched. `extends` needs compose >= 2.20.
+  rocketride-matched:
+    extends:
+      service: rocketride
+    container_name: videobench-rocketride-m8
+    mem_limit: 58g
+    environment:   # torch intra-op threads per task = RR_BLAS_THREADS (4 for 8x4, 5 for 6x5)
+      OMP_NUM_THREADS: "${RR_BLAS_THREADS:-4}"
+      MKL_NUM_THREADS: "${RR_BLAS_THREADS:-4}"
+      OPENBLAS_NUM_THREADS: "${RR_BLAS_THREADS:-4}"
+      VECLIB_MAXIMUM_THREADS: "${RR_BLAS_THREADS:-4}"
+      NUMEXPR_NUM_THREADS: "${RR_BLAS_THREADS:-4}"
+      TORCH_NUM_THREADS: "${RR_BLAS_THREADS:-4}"
+
+  langgraph-matched:
+    extends:
+      service: langgraph
+    container_name: videobench-langgraph-m8
+    command: ["python", "serve8.py"]
+    mem_limit: 58g
+    environment:
+      # Parameterised for the config sweep: W processes x T torch threads, one
+      # port each. Defaults reproduce the original 8x4 matched cell.
+      OMP_NUM_THREADS: "${LG_TORCH_THREADS:-4}"
+      MKL_NUM_THREADS: "${LG_TORCH_THREADS:-4}"
+      OPENBLAS_NUM_THREADS: "${LG_TORCH_THREADS:-4}"
+      VECLIB_MAXIMUM_THREADS: "${LG_TORCH_THREADS:-4}"
+      NUMEXPR_NUM_THREADS: "${LG_TORCH_THREADS:-4}"
+      TORCH_NUM_THREADS: "${LG_TORCH_THREADS:-4}"
+      LG_TORCH_THREADS: "${LG_TORCH_THREADS:-4}"
+      LG_TORCH_INTEROP: "1"
+      LG_DETECT_CONCURRENCY_PER_PROCESS: "${LG_EXPECT_DETECT_CONC:-1}"
+      LG_WORKERS: "${LG_WORKERS:-8}"
+      LG_PORT_BASE: "${LG_PORT_BASE:-8201}"
+      LG_THREAD_LIMIT: "${LG_THREAD_LIMIT:-0}"
+      MALLOC_ARENA_MAX: "2"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os,urllib.request; b=int(os.environ.get('LG_PORT_BASE','8201')); n=int(os.environ.get('LG_WORKERS','8')); [urllib.request.urlopen(f'http://127.0.0.1:{p}/health/ready',timeout=3) for p in range(b,b+n)]"]
+      interval: 15s
+      timeout: 10s
+      retries: 120
+      start_period: 120s
+
+  # ONE-PORT multi-worker cell (the "obvious" deployment): uvicorn --workers 8
+  # on 8200, kernel-balanced. Same per-worker settings as langgraph-matched so
+  # the only difference is port layout / load balancing.
+  langgraph-workers8:
+    extends:
+      service: langgraph
+    container_name: videobench-langgraph-w8
+    command: ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8200", "--workers", "8"]
+    mem_limit: 58g
+    environment:
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      VECLIB_MAXIMUM_THREADS: "4"
+      NUMEXPR_NUM_THREADS: "4"
+      TORCH_NUM_THREADS: "4"
+      LG_TORCH_THREADS: "4"
+      LG_TORCH_INTEROP: "1"
+      LG_DETECT_CONCURRENCY_PER_PROCESS: "1"
+      LG_WORKERS: "8"
+      LG_PORT: "8200"
+      MALLOC_ARENA_MAX: "2"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8200/health/ready',timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 120
+      start_period: 120s
+
+  # IN-PROCESS cell (lg_inproc_6x5_c24): the ORDINARY single-uvicorn server with
+  # three knobs turned — torch 5/1, inference semaphore 6 (one process, ONE
+  # model copy, six concurrent predicts), BLAS/OMP = 5. Same math budget and
+  # inference concurrency as rr_matched_6x5, one process instead of six.
+  langgraph-inproc:
+    extends:
+      service: langgraph
+    container_name: videobench-langgraph-ip
+    mem_limit: 58g
+    environment:
+      OMP_NUM_THREADS: "${LG_TORCH_THREADS:-5}"
+      MKL_NUM_THREADS: "${LG_TORCH_THREADS:-5}"
+      OPENBLAS_NUM_THREADS: "${LG_TORCH_THREADS:-5}"
+      VECLIB_MAXIMUM_THREADS: "${LG_TORCH_THREADS:-5}"
+      NUMEXPR_NUM_THREADS: "${LG_TORCH_THREADS:-5}"
+      TORCH_NUM_THREADS: "${LG_TORCH_THREADS:-5}"
+      LG_TORCH_THREADS: "${LG_TORCH_THREADS:-5}"
+      LG_TORCH_INTEROP: "1"
+      LG_DETECT_CONCURRENCY_PER_PROCESS: "${LG_EXPECT_DETECT_CONC:-6}"
+      LG_THREAD_LIMIT: "${LG_THREAD_LIMIT:-0}"
+      LG_PORT: "8200"
+      MALLOC_ARENA_MAX: "2"
+
+volumes:
+  rr-model-cache:

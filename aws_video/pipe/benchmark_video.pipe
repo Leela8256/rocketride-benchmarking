@@ -1,0 +1,185 @@
+{
+  "components": [
+    {
+      "id": "webhook_1",
+      "provider": "webhook",
+      "name": "Webhook",
+      "config": {
+        "hideForm": true,
+        "type": "webhook",
+        "mode": "Source",
+        "parameters": {}
+      },
+      "ui": {
+        "position": {
+          "x": -690,
+          "y": -10
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      }
+    },
+    {
+      "id": "audio_transcribe_1",
+      "provider": "audio_transcribe",
+      "name": "Transcribe",
+      "config": {
+        "profile": "default",
+        "default": {
+          "model": "base",
+          "silence_threshold": 0.25,
+          "min_seconds": 240,
+          "max_seconds": 300,
+          "vad_level": 1
+        }
+      },
+      "ui": {
+        "position": {
+          "x": -440,
+          "y": 170
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "video",
+          "from": "webhook_1"
+        }
+      ]
+    },
+    {
+      "id": "frame_grabber_1",
+      "provider": "frame_grabber",
+      "name": "Frame Grabber",
+      "config": {
+        "profile": "interval",
+        "interval": {
+          "interval": 15,
+          "start_time": 0,
+          "duration": 0
+        }
+      },
+      "ui": {
+        "position": {
+          "x": -490,
+          "y": -70
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "video",
+          "from": "webhook_1"
+        }
+      ]
+    },
+    {
+      "id": "detect_1",
+      "provider": "detect",
+      "name": "Object Detection",
+      "config": {
+        "profile": "rfdetr",
+        "threshold": 0.3
+      },
+      "ui": {
+        "position": {
+          "x": -200,
+          "y": 160
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "image",
+          "from": "frame_grabber_1"
+        }
+      ]
+    },
+    {
+      "id": "preprocessor_1",
+      "provider": "preprocessor_langchain",
+      "name": "General Text",
+      "config": {
+        "profile": "default",
+        "default": {
+          "splitter": "RecursiveCharacterTextSplitter",
+          "mode": "strlen"
+        }
+      },
+      "ui": {
+        "position": {
+          "x": -190,
+          "y": -70
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "text",
+          "from": "audio_transcribe_1"
+        },
+        {
+          "lane": "text",
+          "from": "detect_1"
+        }
+      ]
+    },
+    {
+      "id": "embedding_1",
+      "provider": "embedding_transformer",
+      "name": "Transformer",
+      "config": {
+        "profile": "miniLM"
+      },
+      "ui": {
+        "position": {
+          "x": 20,
+          "y": 100
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "documents",
+          "from": "preprocessor_1"
+        }
+      ]
+    },
+    {
+      "id": "response_1",
+      "provider": "response_documents",
+      "name": "Return Documents",
+      "config": {
+        "laneName": "documents"
+      },
+      "ui": {
+        "position": {
+          "x": 240,
+          "y": 90
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "documents",
+          "from": "embedding_1"
+        }
+      ]
+    }
+  ],
+  "project_id": "24867948-d87d-43ba-a039-d973d0f5c47b",
+  "version": 1,
+  "isLocked": false,
+  "snapToGrid": true,
+  "snapGridSize": [
+    10,
+    10
+  ],
+  "docRevision": 15
+}

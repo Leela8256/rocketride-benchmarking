@@ -1,0 +1,68 @@
+# ami30h — 62 AMI meetings for the 30-hour RocketRide sizing run.
+# Rule: the 62 usable meetings (Closeup1 + Mix-Headset both on the mirror)
+# whose duration is CLOSEST TO 30 MINUTES, ties broken by meeting ID; then
+# sorted by ID. Durations 23.4-36.8 min, 32.7 h total, ~8.2 GB muxed.
+# First 60 (sorted) are measured, last 2 are warm-up (driver convention).
+# Derived from ami_eda/ami_per_meeting.json (mirror HEAD sweep 2026-08-20).
+EN2002a
+EN2002b
+EN2002d
+ES2003b
+ES2005d
+ES2006b
+ES2006c
+ES2006d
+ES2007b
+ES2008c
+ES2009a
+ES2009b
+ES2009c
+ES2009d
+ES2010b
+ES2010c
+ES2010d
+ES2011b
+ES2011c
+ES2011d
+ES2012c
+ES2013b
+ES2013d
+ES2015c
+ES2015d
+ES2016d
+IB4001
+IB4002
+IB4003
+IB4005
+IS1000a
+IS1000c
+IS1001b
+IS1001c
+IS1002c
+IS1003b
+IS1003c
+IS1003d
+IS1004b
+IS1004d
+IS1005b
+IS1005c
+IS1006b
+IS1006c
+IS1006d
+IS1007c
+IS1007d
+IS1008b
+IS1008c
+IS1008d
+IS1009b
+IS1009c
+IS1009d
+TS3003a
+TS3007a
+TS3009a
+TS3009d
+TS3010b
+TS3010c
+TS3010d
+TS3011a
+TS3011d

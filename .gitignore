@@ -1,0 +1,18 @@
+# per-user settings
+local/local.env
+# run output: S3 is the record, never git
+aws_pdf/results/
+aws_video/results/
+aws_video/runs/
+results/
+# corpora and caches live on the box
+aws_video/corpus/census_archive_films.jsonl
+aws_video/docker-compose.engines.yml
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# os
+.DS_Store
+*.log

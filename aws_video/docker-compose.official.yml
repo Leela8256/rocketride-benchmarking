@@ -1,0 +1,6 @@
+# Use with the base compose file. Selects the verified AWS image without
+# rebuilding the historical 3.3.1 Dockerfile or overwriting its image tag.
+services:
+  rocketride:
+    image: bench-rocketride:official-87f530f
+    build: !reset null

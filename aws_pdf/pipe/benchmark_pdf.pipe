@@ -1,0 +1,125 @@
+{
+  "components": [
+    {
+      "id": "webhook_1",
+      "provider": "webhook",
+      "name": "Webhook",
+      "config": {
+        "hideForm": true,
+        "type": "webhook",
+        "mode": "Source"
+      },
+      "ui": {
+        "position": {
+          "x": -170,
+          "y": 20
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      }
+    },
+    {
+      "id": "parse_1",
+      "provider": "parse",
+      "name": "Parser",
+      "config": {},
+      "ui": {
+        "position": {
+          "x": 10,
+          "y": 40
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "tags",
+          "from": "webhook_1"
+        }
+      ]
+    },
+    {
+      "id": "preprocessor_1",
+      "provider": "preprocessor_langchain",
+      "name": "General Text",
+      "config": {
+        "profile": "default",
+        "default": {
+          "splitter": "RecursiveCharacterTextSplitter",
+          "mode": "strlen"
+        }
+      },
+      "ui": {
+        "position": {
+          "x": 220,
+          "y": 140
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "text",
+          "from": "parse_1"
+        },
+        {
+          "lane": "text",
+          "from": "webhook_1"
+        }
+      ]
+    },
+    {
+      "id": "embedding_1",
+      "provider": "embedding_transformer",
+      "name": "Transformer",
+      "config": {
+        "profile": "miniLM"
+      },
+      "ui": {
+        "position": {
+          "x": 420,
+          "y": 150
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "documents",
+          "from": "preprocessor_1"
+        }
+      ]
+    },
+    {
+      "id": "response_1",
+      "provider": "response_documents",
+      "name": "Return Documents",
+      "config": {
+        "laneName": "documents"
+      },
+      "ui": {
+        "position": {
+          "x": 600,
+          "y": 150
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "documents",
+          "from": "embedding_1"
+        }
+      ]
+    }
+  ],
+  "project_id": "2798d17f-e9f1-431c-817a-4bf12223aa31",
+  "version": 1,
+  "isLocked": false,
+  "snapToGrid": true,
+  "snapGridSize": [
+    10,
+    10
+  ],
+  "docRevision": 16
+}

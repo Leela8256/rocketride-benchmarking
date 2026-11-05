@@ -1,0 +1,39 @@
+[project]
+name = "langgraph-fastapi-service"
+version = "0.1.0"
+description = "Generic LangGraph benchmark server — Phase L: document-pdf-v1"
+requires-python = ">=3.11"
+# Still forbidden, in every phase: Agent Server, langgraph-cli, langgraph-sdk,
+# LangSmith, Postgres, Redis, queues.
+#
+# pypdf is PINNED EXACTLY: it defines the offline reference, so a bump changes
+# extracted text and invalidates parity artifacts. Bump only with a deliberate
+# reference regeneration.
+dependencies = [
+    "fastapi>=0.141",
+    "uvicorn>=0.52",
+    "python-multipart>=0.0.32",
+    "langgraph>=1.2.10",
+    "pypdf==6.15.0",
+    "langchain-text-splitters>=1.1.2",
+    "sentence-transformers>=5.7.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9",
+    "httpx>=0.28",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["service", "pipelines"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: loads the embedding model or runs the full graph",
+]

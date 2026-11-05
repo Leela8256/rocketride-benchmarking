@@ -1,0 +1,158 @@
+# Both benchmark arms, equal envelope.
+#
+# The resource limits ARE the benchmark: comparing two frameworks is
+# meaningless unless both get identical CPU and memory. Change them only in
+# pairs, and record the change with any results.
+#
+#   docker compose up -d langgraph      # LangGraph arm (+ tika if EXTRACTOR=tika)
+#   docker compose up -d rocketride     # RocketRide arm
+#
+# Arms are started ONE AT A TIME by run/matched_run.sh. Running both at once
+# on a 32-vCPU box with 12 CPU each leaves them contending, and neither
+# number means anything.
+
+# BENCH_CPUSET is the real equaliser and applies to ALL THREE services.
+# An ARM is (service + whatever it offloads to), so LangGraph's langgraph+tika
+# pair must share the SAME physical cores that RocketRide gets alone --
+# otherwise the LG arm has 12 CPU for the service PLUS 12 for tika against
+# RocketRide's 12, and it wins by being handed twice the machine.
+# matched_run.sh derives it from ARM_CPUS; empty = full host (uncapped runs).
+# CPU is pinned as a SET shared by every container in an arm. LangGraph's arm
+# is langgraph+tika together; RocketRide's is one container. Without this the
+# LG arm silently gets a second full allocation.
+#
+# MEMORY IS DELIBERATELY NOT CAPPED. Capping per container gave the LG arm
+# 2x RocketRide's ceiling (10g + 10g vs 10g), and an arm-total cap cannot be
+# expressed per-container anyway. A 10g cap would also have OOM-killed
+# RocketRide, which peaked at 10,536 MB. Memory GRANTED must be equal --
+# unconstrained on both sides is equal -- and memory USED is a reported
+# outcome (peak RSS), not a resource grant.
+x-envelope: &envelope
+  cpuset: "${BENCH_CPUSET:-}"
+
+services:
+  langgraph:
+    build:
+      context: ./arms/langgraph
+      dockerfile: Dockerfile
+    image: bench-langgraph:latest
+    platform: linux/amd64
+    container_name: bench-langgraph
+    <<: *envelope
+    environment:
+      PIPELINES: document-pdf-v1
+      EXECUTOR_WORKERS: "4"        # reported on /meta but INERT — nodes.py uses
+                                   # LangGraph's default executor, width
+                                   # min(32, cpu_count+4). Never quote /meta here.
+      MAX_INFLIGHT_REQUESTS: "8"
+      REQUEST_TIMEOUT_SECONDS: "300"
+      TORCH_THREADS: "1"
+      TORCH_INTEROP_THREADS: "1"
+      MAX_UPLOAD_BYTES: "104857600"
+      HF_HUB_OFFLINE: "1"
+      # Intra-op threading pinned on BOTH arms. Document-level concurrency is
+      # the variable under test; BLAS threading is a confound.
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      EXTRACTOR: "${LG_EXTRACTOR:-tika}"
+      TIKA_URL: "http://tika:9998"
+    ports: ["8100:8100"]
+    healthcheck:
+      # warm-up gated: unhealthy until the graph has processed its own fixture
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health/ready',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  rocketride:
+    build:
+      context: ./arms/rocketride
+      dockerfile: Dockerfile
+      args:
+        RR_LENSORT_PATCH: "${RR_LENSORT_PATCH:-0}"
+        # Engine under test; defaults in the Dockerfile (3.3.1). Set
+        # ENGINE_VERSION/ENGINE_URL/ENGINE_SHA256 (empty = unverified) and
+        # PARSE_STOCK_URL (parse-node A/B control) in the environment.
+        ENGINE_VERSION: "${ENGINE_VERSION:-3.3.1}"
+        ENGINE_URL: "${ENGINE_URL:-https://github.com/rocketride-org/rocketride-server/releases/download/server-v3.3.1/rocketride-server-v3.3.1-linux-x64.tar.gz}"
+        ENGINE_SHA256: "${ENGINE_SHA256-95768e2640df2d34dd6dfea2e456f36da03ad80b091f9d057c116dfe748d9747}"
+        ENGINE_ARCHIVE_SHA256: "${ENGINE_ARCHIVE_SHA256:-}"
+        RR_DUP_PATCH: "${RR_DUP_PATCH:-1}"
+        PARSE_STOCK_URL: "${PARSE_STOCK_URL:-}"
+    image: bench-rocketride:latest
+    platform: linux/amd64
+    container_name: bench-rocketride
+    <<: *envelope
+    environment:
+      ROCKETRIDE_URI: ws://127.0.0.1:5565/task/service
+      ROCKETRIDE_APIKEY: local-dev
+      RR_HOST: "0.0.0.0"           # MUST be explicit: without it the engine
+                                   # binds an interface unreachable from the host
+      OMP_NUM_THREADS: "1"         # matched to the langgraph arm
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    ports: ["5565:5565"]
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket,sys; s=socket.socket(); s.settimeout(3); sys.exit(s.connect_ex(('127.0.0.1',5565)))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  bench:
+    # The CLIENT. Drives both arms over the network so client CPU/RSS lands in
+    # neither server's cgroup, and both arms receive bytes over an equivalent
+    # hop. Pinned to its OWN cores so it cannot steal from the arm under test.
+    build:
+      context: ./bench
+      dockerfile: bench.Dockerfile
+    image: bench-client:latest
+    platform: linux/amd64
+    container_name: bench-client
+    profiles: ["client"]          # never started by `up`; used via `compose run`
+    cpuset: "${CLIENT_CPUSET:-}"
+    environment:
+      LG_URL: "http://langgraph:8100"
+      ROCKETRIDE_URI: "ws://rocketride:5565/task/service"
+      ROCKETRIDE_APIKEY: local-dev
+      BENCH_TIMEOUT_S: "${BENCH_TIMEOUT_S:-3600}"
+      BENCH_PIPE: /pipe/benchmark_pdf.pipe
+      BENCH_WARMUP_DOC: /probe/sample.pdf
+      RR_THREADS: "${RR_THREADS:-}"
+      RR_POOL_MAX: "${RR_POOL_MAX:-0}"
+      # Per-node timing via the engine's own apaevt_flow traces. Empty = off,
+      # which is what every throughput run must use: the control for a traced
+      # run is the same driver with this unset.
+      RR_TRACE: "${RR_TRACE:-}"
+      # Diagnostic only. Zero keeps the benchmark unprofiled.
+      RR_PROFILE_SECONDS: "${RR_PROFILE_SECONDS:-0}"
+    volumes:
+      - "${CORPUS}:/corpus:ro"
+      - ./results:/results
+      - ./pipe:/pipe:ro
+      - ./arms/rocketride/data/probe:/probe:ro
+
+  tika:
+    # Pinned to the Tika the RocketRide engine bundles (3.2.3), loaded with
+    # RocketRide's own config so both arms parse identically.
+    #
+    # In EXTRACTOR=tika mode the LangGraph arm's PARSE work happens HERE, not
+    # in its own container, so its CPU is NOT in the langgraph cgroup. Two
+    # consequences, both handled rather than ignored:
+    #   1. it shares the arm's cpuset, so the LG arm does not get extra cores
+    #   2. the report ADDS this container's CPU to LangGraph's cost, because
+    #      RocketRide is charged for its own (embedded) Tika and anything else
+    #      would compare a parsing framework against a non-parsing one
+    image: apache/tika:3.2.3.0-full
+    container_name: bench-tika
+    command: ["-c", "/tika-config/tika-config.xml"]
+    volumes:
+      - ./arms/langgraph/tika-config:/tika-config:ro
+    <<: *envelope
+    ports: ["9998:9998"]

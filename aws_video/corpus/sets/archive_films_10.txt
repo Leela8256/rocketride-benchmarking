@@ -1,0 +1,11 @@
+# archive_films_v2 nested subset 10/500 — first 10 accepted in queue order; frozen 2026-08-23; manifest sha bd0c915e28710322bace0549d7372dddea5578895333f143c67e04252e4e02a1
+charlie_chaplin_film_fest	charlie_chaplin_film_fest.mp4
+his_girl_friday	his_girl_friday.mp4
+VoyagetothePlanetofPrehistoricWomen	VoyagetothePlanetofPrehistoricWomen.mp4
+house_on_haunted_hill_ipod	house_on_haunted_hill.mp4
+JungleBook	Jungle_Book.mp4
+reefer_madness1938	reefer_madness1938.mp4
+Sita_Sings_the_Blues	SSTB_1080_FINAL_2009_02.mp4
+The_Pied_Piper_of_Hamelin	pied.mp4
+BloodyPitOfHorror	BloodyPitOfHorror.mp4
+abraham_lincoln	abraham_lincoln.mp4
