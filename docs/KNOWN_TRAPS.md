@@ -154,3 +154,7 @@ any launch longer than ten minutes.
     unstable while the pipeline is not.
 44. **`cross_mode_determinism.py` prints "NOT INVARIANT" on any single-arm
     run** because the absent arm has no records. Read the per-arm lines.
+45. **`aws_pdf/bench/test_langgraph_profile.py` runs inside the profiler
+    image** (it loads `/app/bench_profile_app.py`). On a laptop its
+    `setUpClass` errors by design; the other five tests in `bench/` pass
+    with `cd aws_pdf/bench && python3 -m unittest test_profile_capture`.
